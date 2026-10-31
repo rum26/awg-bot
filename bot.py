@@ -86,9 +86,7 @@ async def run_script(name: str, args: list[str] | None = None) -> str:
 
 
 def is_admin(update: Update) -> bool:
-    print(update.effective_user.id, type(update.effective_user.id))
-    print(USER_ID)
-    return update.effective_user.id != int(USER_ID)
+    return update.effective_user.id == int(USER_ID)
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
