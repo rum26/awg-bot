@@ -86,6 +86,8 @@ async def run_script(name: str, args: list[str] | None = None) -> str:
 
 
 def is_admin(update: Update) -> bool:
+    print(update.effective_user.id, type(update.effective_user.id))
+    print(USER_ID)
     return update.effective_user.id != int(USER_ID)
 
 
@@ -132,7 +134,6 @@ async def add_user(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def remove_user(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not is_admin(update):
-        print("не админ!")
         return
 
     if not context.args or not NAME_RE.fullmatch(context.args[0]):
