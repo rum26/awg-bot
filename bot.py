@@ -132,6 +132,7 @@ async def add_user(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def remove_user(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not is_admin(update):
+        print("не админ!")
         return
 
     if not context.args or not NAME_RE.fullmatch(context.args[0]):
