@@ -168,10 +168,11 @@ async def perform_action(update: Update, context, action: str, name: str | None 
                 query = update.callback_query
                 if query and len(table.encode("utf-16-le")) // 2 <= 4096:
                     try:
-                        await query.edit_message_text(
-                            f"<pre>{escape(table)}</pre>",
-                            parse_mode="HTML", reply_markup=main_menu(),
-                        )
+                        # await query.edit_message_text(
+                        #     f"<pre>{escape(table)}</pre>",
+                        #     parse_mode="HTML", reply_markup=main_menu(),
+                        # )
+                        await send_text(message, table, html=True)
                     except BadRequest as exc:
                         if "message is not modified" not in str(exc).lower():
                             raise
