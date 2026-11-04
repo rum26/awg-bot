@@ -49,6 +49,14 @@ RestartSec=5
 WantedBy=multi-user.target
 ```
 
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable awg-bot
+sudo systemctl start awg-bot
+sudo systemctl status awg-bot
+sudo systemctl stop awg-bot
+sudo systemctl disable awg-bot
+```
 ## Управление клиентами
 
 ```bash
