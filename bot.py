@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import logging
 import os
 import re
 from html import escape
@@ -30,11 +29,6 @@ if not USER_ID or not TOKEN:
 
 USER_ID = int(USER_ID)
 
-logging.basicConfig(
-    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-    level=logging.INFO,
-)
-logger = logging.getLogger("awg-bot")
 SCRIPTS_DIR = Path("/opt/awg-bot/scripts")
 ALLOWED_SCRIPTS = {
     "add": SCRIPTS_DIR / "add_user.sh",
@@ -107,11 +101,11 @@ async def run_script(name: str, args: list[str] | None = None) -> tuple[bool, st
             return False, "Ошибка: таймаут выполнения скрипта."
         output = stdout.decode(errors="replace").strip()
         if proc.returncode != 0:
-            logger.error("Скрипт %s: код %s, вывод: %s", name, proc.returncode, output)
+            print(f"Скрипт {name}: {output}")
             return False, f"Ошибка скрипта (код {proc.returncode}):\n{output or 'Нет вывода.'}"
         return True, output or "Готово."
-    except Exception:
-        logger.exception("Ошибка запуска скрипта %s", name)
+    except Exception as ex:
+        print("Ошибка запуска скрипта:", name, ex)
         return False, "Ошибка выполнения. Подробности в журнале."
 
 
@@ -162,7 +156,7 @@ async def perform_action(update: Update, context, action: str, name: str | None 
                 try:
                     table = format_stats(users)
                 except (KeyError, TypeError, ValueError, OverflowError):
-                    logger.exception("Некорректный формат статистики")
+                    print("Некорректный формат статистики")
                     await send_text(message, "Ошибка формата статистики. Подробности в журнале.")
                     return
                 query = update.callback_query
@@ -271,12 +265,12 @@ async def remove_user(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     error = context.error
-    logger.error("Ошибка обработки обновления", exc_info=(type(error), error, error.__traceback__))
+    print("Ошибка обработки обновления:", error)
     if isinstance(update, Update) and is_admin(update) and update.effective_message:
         try:
             await update.effective_message.reply_text("Ошибка. Подробности в журнале бота.")
-        except Exception:
-            logger.exception("Не удалось отправить сообщение об ошибке")
+        except Exception as ex:
+            print("Не удалось отправить сообщение об ошибке", ex)
 
 
 def main() -> None:
