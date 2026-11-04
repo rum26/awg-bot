@@ -14,6 +14,11 @@ from telegram.ext import (
     ContextTypes,
 )
 
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import CallbackQueryHandler
+from telegram.ext import MessageHandler, filters
+
+
 load_dotenv()
 USER_ID = os.getenv("USER_ID")
 TOKEN = os.getenv("TOKEN")
@@ -30,6 +35,9 @@ if not USER_ID or not TOKEN:
         file_env.write(f"TOKEN={TOKEN}\n")
 
     load_dotenv(override=True)
+
+USER_ID = int(USER_ID)
+
 
 logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
@@ -85,18 +93,62 @@ async def run_script(name: str, args: list[str] | None = None):
 
 
 def is_admin(update: Update):
-    return update.effective_user.id == int(USER_ID)
+    return update.effective_user.id == USER_ID
 
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+def main_menu() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("➕ Добавить", callback_data="add")],
+        [InlineKeyboardButton("📊 Статистика", callback_data="stats")],
+        [InlineKeyboardButton("🗑 Удалить", callback_data="remove")],
+    ])
+
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not is_admin(update):
+        print(USER_ID, update.effective_user.id)
+        print('не админ')
+        return
+
+    await update.message.reply_text(
+        "Управление AmneziaWG:",
+        reply_markup=main_menu(),
+    )
+
+
+async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not is_admin(update):
         return
-    await update.message.reply_text(
-        "Команды:\n"
-        "/add <имя> — добавить пользователя\n"
-        "/remove <имя> — удалить пользователя\n"
-        "/stats — статистика"
-    )
+
+    query = update.callback_query
+    await query.answer()
+
+    action = query.data
+
+    if action == "stats":
+        result = await run_script("stats")
+
+        try:
+            users = json.loads(result)
+        except json.JSONDecodeError:
+            await query.edit_message_text(result, reply_markup=main_menu())
+            return
+
+        if not isinstance(users, list):
+            await query.edit_message_text(result, reply_markup=main_menu())
+            return
+
+        table = format_stats(users)
+        await query.edit_message_text(
+            f"<pre>{escape(table)}</pre>",
+            parse_mode="HTML",
+            reply_markup=main_menu(),
+        )
+        return
+
+    if action in ("add", "remove"):
+        context.user_data["pending_action"] = action
+        await query.message.reply_text("Пришли имя пользователя одним сообщением:")
 
 
 async def add_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -139,6 +191,48 @@ async def remove_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     result = await run_script("remove", [context.args[0]])
     await update.message.reply_text(result)
+
+
+async def handle_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update):
+        return
+
+    action = context.user_data.get("pending_action")
+
+    if action not in ("add", "remove"):
+        return
+
+    name = (update.message.text or "").strip()
+
+    if not NAME_RE.fullmatch(name):
+        await update.message.reply_text(
+            "Недопустимое имя. Разрешены латиница, цифры, `_` и `-`, до 32 символов."
+        )
+        return
+
+    result = await run_script(action, [name])
+    context.user_data.pop("pending_action", None)
+
+    await update.message.reply_text(result, reply_markup=main_menu())
+
+    if action == "add":
+        files = [
+            [Path(f"/root/awg/{name}.conf"), "Простой конфиг для AmneziaWG"],
+            [Path(f"/root/awg/{name}.png"), "Простой QR для AmneziaWG"],
+            [Path(f"/root/awg/{name}.vpnuri.png"), "Улучшенный QR для AmneziaVPN"],
+        ]
+
+        for file, title in files:
+            if file.is_file():
+                await asyncio.sleep(6)
+                await update.message.reply_document(document=file, caption=title)
+
+        vpnuri_file = Path(f"/root/awg/{name}.vpnuri")
+
+        if vpnuri_file.is_file():
+            await update.message.reply_text(
+                vpnuri_file.read_text(encoding="utf-8").strip()
+            )
 
 
 def format_stats(users: list[dict]) -> str:
@@ -203,14 +297,13 @@ def main() -> None:
     app = Application.builder().token(token).build()
 
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("add", add_user))
-    app.add_handler(CommandHandler("remove", remove_user))
-    app.add_handler(CommandHandler("stats", stats))
+    app.add_handler(CallbackQueryHandler(button_handler))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_name))
     app.add_error_handler(error_handler)
 
     app.run_polling(
         poll_interval=5,
-        timeout=30,
+        timeout=60,
         bootstrap_retries=-1,
         drop_pending_updates=False,
     )
