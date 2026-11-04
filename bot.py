@@ -37,6 +37,8 @@ ALLOWED_SCRIPTS = {
 }
 NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,32}$")
 
+print(f"RUN: {USER_ID}")
+
 
 def is_admin(update: Update) -> bool:
     return update.effective_user is not None and update.effective_user.id == USER_ID
@@ -129,12 +131,14 @@ async def send_configs(message, name: str) -> None:
     ]
     for file, title in files:
         if file.is_file():
+            await asyncio.sleep(4)
             with file.open("rb") as document:
                 await message.reply_document(document=document, filename=file.name, caption=title)
     vpnuri_file = Path(f"/root/awg/{name}.vpnuri")
     if vpnuri_file.is_file():
         vpnuri = vpnuri_file.read_text(encoding="utf-8").strip()
         if vpnuri:
+            await asyncio.sleep(4)
             # Не разрезаем строку подключения на неработающие фрагменты.
             if len(vpnuri.encode("utf-16-le")) // 2 <= 4096:
                 await message.reply_text(vpnuri)
@@ -232,37 +236,6 @@ async def handle_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     launch_action(update, context, action, name)
 
 
-async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not is_admin(update):
-        return
-    if context.bot_data.get("script_busy"):
-        await update.effective_message.reply_text("Дождись завершения предыдущей операции.")
-        return
-    context.user_data.pop("pending_action", None)
-    launch_action(update, context, "stats")
-
-
-async def name_command(update: Update, context, action: str) -> None:
-    if not is_admin(update):
-        return
-    if context.bot_data.get("script_busy"):
-        await update.effective_message.reply_text("Дождись завершения предыдущей операции.")
-        return
-    if len(context.args) != 1 or not NAME_RE.fullmatch(context.args[0]):
-        await update.effective_message.reply_text(f"Использование: /{action} <имя>")
-        return
-    context.user_data.pop("pending_action", None)
-    launch_action(update, context, action, context.args[0])
-
-
-async def add_user(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await name_command(update, context, "add")
-
-
-async def remove_user(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await name_command(update, context, "remove")
-
-
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     error = context.error
     print("Ошибка обработки обновления:", error)
@@ -276,9 +249,6 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
 def main() -> None:
     app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("stats", stats))
-    app.add_handler(CommandHandler("add", add_user))
-    app.add_handler(CommandHandler("remove", remove_user))
     app.add_handler(CallbackQueryHandler(button_handler, pattern=r"^(add|remove|stats)$"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_name))
     app.add_error_handler(error_handler)
