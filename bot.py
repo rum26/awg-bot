@@ -149,7 +149,7 @@ async def perform_action(message, context, action, name=None):
                 await send_text(message, format_stats(users), table=True)
                 return
         await send_text(message, result)
-        if action == "add" and ok:
+        if action == "add":
             await send_configs(message, name)
     except Exception:
         logger.exception("Ошибка операции %s", action)
