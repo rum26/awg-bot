@@ -1,99 +1,51 @@
+from __future__ import annotations
+
 import asyncio
 import json
 import logging
-import re
 import os
+import re
 from html import escape
 from pathlib import Path
+
 from dotenv import load_dotenv
-
-from telegram import Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram.error import BadRequest
 from telegram.ext import (
-    Application,
-    CommandHandler,
-    ContextTypes,
+    Application, CallbackQueryHandler, CommandHandler,
+    ContextTypes, MessageHandler, filters,
 )
-
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import CallbackQueryHandler
-from telegram.ext import MessageHandler, filters
-
 
 load_dotenv()
 USER_ID = os.getenv("USER_ID")
 TOKEN = os.getenv("TOKEN")
 
 if not USER_ID or not TOKEN:
-    USER_ID = input("USER ID:").strip()
-    TOKEN = input("TOKEN:").strip()
-
+    USER_ID = USER_ID or input("USER ID: ").strip()
+    TOKEN = TOKEN or input("TOKEN: ").strip()
     if not USER_ID or not TOKEN:
         raise ValueError("USER_ID и TOKEN не могут быть пустыми")
-
     with open(".env", "w", encoding="utf-8") as file_env:
-        file_env.write(f"USER_ID={USER_ID}\n")
-        file_env.write(f"TOKEN={TOKEN}\n")
-
-    load_dotenv(override=True)
+        file_env.write(f"USER_ID={USER_ID}\nTOKEN={TOKEN}\n")
 
 USER_ID = int(USER_ID)
-
 
 logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     level=logging.INFO,
 )
 logger = logging.getLogger("awg-bot")
-
 SCRIPTS_DIR = Path("/opt/awg-bot/scripts")
-
 ALLOWED_SCRIPTS = {
     "add": SCRIPTS_DIR / "add_user.sh",
     "remove": SCRIPTS_DIR / "remove_user.sh",
     "stats": SCRIPTS_DIR / "stats.sh",
 }
-
 NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,32}$")
 
 
-def format_size(n: int) -> str:
-    value = float(n)
-    for unit in ("Б", "КБ", "МБ", "ГБ", "ТБ"):
-        if value < 1024 or unit == "ТБ":
-            return f"{value:.1f} {unit}"
-        value /= 1024
-
-
-async def run_script(name: str, args: list[str] | None = None):
-    script = ALLOWED_SCRIPTS.get(name)
-
-    if not script or not script.is_file():
-        return "Скрипт не найден."
-
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            "/usr/bin/sudo", str(script), *(args or []),
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,
-        )
-
-        try:
-            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=30)
-        except asyncio.TimeoutError:
-            proc.kill()
-            await proc.wait()
-            return "Ошибка: таймаут выполнения."
-
-        output = stdout.decode(errors="replace").strip()
-        return output or "Готово."
-
-    except Exception as ex:
-        logger.exception(f"Ошибка запуска скрипта {ex}")
-        return "Ошибка выполнения."
-
-
-def is_admin(update: Update):
-    return update.effective_user.id == USER_ID
+def is_admin(update: Update) -> bool:
+    return update.effective_user is not None and update.effective_user.id == USER_ID
 
 
 def main_menu() -> InlineKeyboardMarkup:
@@ -104,207 +56,241 @@ def main_menu() -> InlineKeyboardMarkup:
     ])
 
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not is_admin(update):
-        print(USER_ID, update.effective_user.id)
-        print('не админ')
-        return
-
-    await update.message.reply_text(
-        "Управление AmneziaWG:",
-        reply_markup=main_menu(),
-    )
-
-
-async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not is_admin(update):
-        return
-
-    query = update.callback_query
-    await query.answer()
-
-    action = query.data
-
-    if action == "stats":
-        result = await run_script("stats")
-
-        try:
-            users = json.loads(result)
-        except json.JSONDecodeError:
-            await query.edit_message_text(result, reply_markup=main_menu())
-            return
-
-        if not isinstance(users, list):
-            await query.edit_message_text(result, reply_markup=main_menu())
-            return
-
-        table = format_stats(users)
-        await query.edit_message_text(
-            f"<pre>{escape(table)}</pre>",
-            parse_mode="HTML",
-            reply_markup=main_menu(),
-        )
-        return
-
-    if action in ("add", "remove"):
-        context.user_data["pending_action"] = action
-        await query.message.reply_text("Пришли имя пользователя одним сообщением:")
-
-
-async def add_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update):
-        return
-
-    if not context.args or not NAME_RE.fullmatch(context.args[0]):
-        await update.message.reply_text("Использование: /add <имя>")
-        return
-
-    name = context.args[0]
-    result = await run_script("add", [name])
-    await update.message.reply_text(result)
-
-    files = [
-        [Path(f"/root/awg/{name}.conf"), "Простой конфиг для AmneziaWG"],
-        [Path(f"/root/awg/{name}.png"), "Простой QR для AmneziaWG"],
-        # [Path(f"/root/awg/{name}.vpnuri"), "Улучшенный конфиг для AmneziaVPN"],
-        [Path(f"/root/awg/{name}.vpnuri.png"), "Улучшенный QR для AmneziaVPN"],
-    ]
-
-    for file, title in files:
-        if file.is_file():
-            await update.message.reply_document(document=file, caption=title)
-
-    vpnuri_file = Path(f"/root/awg/{name}.vpnuri")
-
-    if vpnuri_file.is_file():
-        vpnuri = vpnuri_file.read_text(encoding="utf-8").strip()
-        await update.message.reply_text(vpnuri)
-
-
-async def remove_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update):
-        return
-
-    if not context.args or not NAME_RE.fullmatch(context.args[0]):
-        await update.message.reply_text("Использование: /remove <имя>")
-        return
-
-    result = await run_script("remove", [context.args[0]])
-    await update.message.reply_text(result)
-
-
-async def handle_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update):
-        return
-
-    action = context.user_data.get("pending_action")
-
-    if action not in ("add", "remove"):
-        return
-
-    name = (update.message.text or "").strip()
-
-    if not NAME_RE.fullmatch(name):
-        await update.message.reply_text(
-            "Недопустимое имя. Разрешены латиница, цифры, `_` и `-`, до 32 символов."
-        )
-        return
-
-    result = await run_script(action, [name])
-    context.user_data.pop("pending_action", None)
-
-    await update.message.reply_text(result, reply_markup=main_menu())
-
-    if action == "add":
-        files = [
-            [Path(f"/root/awg/{name}.conf"), "Простой конфиг для AmneziaWG"],
-            [Path(f"/root/awg/{name}.png"), "Простой QR для AmneziaWG"],
-            [Path(f"/root/awg/{name}.vpnuri.png"), "Улучшенный QR для AmneziaVPN"],
-        ]
-
-        for file, title in files:
-            if file.is_file():
-                await asyncio.sleep(6)
-                await update.message.reply_document(document=file, caption=title)
-
-        vpnuri_file = Path(f"/root/awg/{name}.vpnuri")
-
-        if vpnuri_file.is_file():
-            await update.message.reply_text(
-                vpnuri_file.read_text(encoding="utf-8").strip()
-            )
+def format_size(n: int) -> str:
+    value = float(n)
+    for unit in ("Б", "КБ", "МБ", "ГБ", "ТБ"):
+        if value < 1024 or unit == "ТБ":
+            return f"{value:.1f} {unit}"
+        value /= 1024
 
 
 def format_stats(users: list[dict]) -> str:
-    rows = []
-
-    for user in users:
-        rows.append((
-            user["name"],
-            user["ip"],
-            format_size(user["tx"]),
-            user["status"],
-        ))
-
-    name_w = max(len("Имя"), *(len(r[0]) for r in rows))
-    ip_w = max(len("IP"), *(len(r[1]) for r in rows))
-    size_w = max(len("Скачано"), *(len(r[2]) for r in rows))
-    status_w = max(len("Статус"), *(len(r[3]) for r in rows))
-
+    if not users:
+        return "Пользователей пока нет."
+    rows = [
+        (str(u["name"]), str(u["ip"]), format_size(int(u["tx"])), str(u["status"]))
+        for u in users
+    ]
+    headers = ("Имя", "IP", "Скачано", "Статус")
+    widths = [max(len(headers[i]), *(len(row[i]) for row in rows)) for i in range(4)]
+    name_w, ip_w, size_w, status_w = widths
     lines = [
         f"{'Имя':<{name_w}}  {'IP':<{ip_w}}  {'Скачано':<{size_w}}  {'Статус':<{status_w}}",
-        "-" * (name_w + ip_w + size_w + status_w + 6),
+        "-" * (sum(widths) + 6),
     ]
-
     for name, ip, size, status in rows:
         lines.append(
             f"{name:<{name_w}}  {ip:<{ip_w}}  {size:>{size_w}}  {status:<{status_w}}"
         )
-
     return "\n".join(lines)
 
 
-async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def run_script(name: str, args: list[str] | None = None) -> tuple[bool, str]:
+    script = ALLOWED_SCRIPTS.get(name)
+    if not script or not script.is_file():
+        return False, "Скрипт не найден."
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "/usr/bin/sudo", "-n", str(script), *(args or []),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+        )
+        try:
+            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=30)
+        except asyncio.TimeoutError:
+            if proc.returncode is None:
+                try:
+                    proc.kill()
+                except ProcessLookupError:
+                    pass
+            await proc.communicate()
+            return False, "Ошибка: таймаут выполнения скрипта."
+        output = stdout.decode(errors="replace").strip()
+        if proc.returncode != 0:
+            logger.error("Скрипт %s: код %s, вывод: %s", name, proc.returncode, output)
+            return False, f"Ошибка скрипта (код {proc.returncode}):\n{output or 'Нет вывода.'}"
+        return True, output or "Готово."
+    except Exception:
+        logger.exception("Ошибка запуска скрипта %s", name)
+        return False, "Ошибка выполнения. Подробности в журнале."
+
+
+async def send_text(message, text: str, *, html: bool = False) -> None:
+    # До 1500 символов на часть: запас для лимита Telegram и UTF-16.
+    text = text or "Нет данных."
+    for offset in range(0, len(text), 1500):
+        part = text[offset:offset + 1500]
+        await message.reply_text(
+            f"<pre>{escape(part)}</pre>" if html else part,
+            parse_mode="HTML" if html else None,
+            reply_markup=main_menu() if offset + 1500 >= len(text) else None,
+        )
+
+
+async def send_configs(message, name: str) -> None:
+    files = [
+        (Path(f"/root/awg/{name}.conf"), "Простой конфиг для AmneziaWG"),
+        (Path(f"/root/awg/{name}.png"), "Простой QR для AmneziaWG"),
+        (Path(f"/root/awg/{name}.vpnuri.png"), "Улучшенный QR для AmneziaVPN"),
+    ]
+    for file, title in files:
+        if file.is_file():
+            with file.open("rb") as document:
+                await message.reply_document(document=document, filename=file.name, caption=title)
+    vpnuri_file = Path(f"/root/awg/{name}.vpnuri")
+    if vpnuri_file.is_file():
+        vpnuri = vpnuri_file.read_text(encoding="utf-8").strip()
+        if vpnuri:
+            # Не разрезаем строку подключения на неработающие фрагменты.
+            if len(vpnuri.encode("utf-16-le")) // 2 <= 4096:
+                await message.reply_text(vpnuri)
+            else:
+                with vpnuri_file.open("rb") as document:
+                    await message.reply_document(document=document, filename=vpnuri_file.name)
+
+
+async def perform_action(update: Update, context, action: str, name: str | None = None) -> None:
+    message = update.effective_message
+    try:
+        ok, result = await run_script(action, [name] if name else None)
+        if action == "stats" and ok:
+            try:
+                users = json.loads(result)
+            except json.JSONDecodeError:
+                users = None
+            if isinstance(users, list):
+                try:
+                    table = format_stats(users)
+                except (KeyError, TypeError, ValueError, OverflowError):
+                    logger.exception("Некорректный формат статистики")
+                    await send_text(message, "Ошибка формата статистики. Подробности в журнале.")
+                    return
+                query = update.callback_query
+                if query and len(table.encode("utf-16-le")) // 2 <= 4096:
+                    try:
+                        await query.edit_message_text(
+                            f"<pre>{escape(table)}</pre>",
+                            parse_mode="HTML", reply_markup=main_menu(),
+                        )
+                    except BadRequest as exc:
+                        if "message is not modified" not in str(exc).lower():
+                            raise
+                else:
+                    await send_text(message, table, html=True)
+                return
+        await send_text(message, result)
+        if action == "add" and ok:
+            await send_configs(message, name)
+    finally:
+        context.bot_data.pop("script_busy", None)
+
+
+def launch_action(update: Update, context, action: str, name: str | None = None) -> None:
+    # Задача работает в фоне, обработчик сразу освобождает очередь обновлений.
+    # Флаг устанавливается до create_task: скрипты не запускаются параллельно.
+    context.bot_data["script_busy"] = True
+    context.application.create_task(perform_action(update, context, action, name), update=update)
+
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not is_admin(update):
         return
+    context.user_data.pop("pending_action", None)
+    await update.effective_message.reply_text("Управление AmneziaWG:", reply_markup=main_menu())
 
-    result = await run_script("stats")
 
-    try:
-        users = json.loads(result)
-    except json.JSONDecodeError:
-        await update.message.reply_text(result)
+async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    if query is None:
         return
-
-    if not isinstance(users, list):
-        await update.message.reply_text(result)
+    if not is_admin(update):
+        await query.answer("Нет доступа. Проверь USER_ID в .env.", show_alert=True)
         return
+    if context.bot_data.get("script_busy"):
+        await query.answer("Предыдущая операция ещё выполняется.", show_alert=True)
+        return
+    await query.answer()
+    action = query.data
+    if action == "stats":
+        context.user_data.pop("pending_action", None)
+        launch_action(update, context, action)
+    elif action in ("add", "remove"):
+        context.user_data["pending_action"] = action
+        await update.effective_message.reply_text("Пришли имя пользователя одним сообщением:")
 
-    table = format_stats(users)
-    await update.message.reply_text(
-        f"<pre>{escape(table)}</pre>",
-        parse_mode="HTML",
-    )
+
+async def handle_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not is_admin(update):
+        return
+    action = context.user_data.get("pending_action")
+    if action not in ("add", "remove"):
+        return
+    message = update.effective_message
+    if context.bot_data.get("script_busy"):
+        await message.reply_text("Дождись завершения предыдущей операции.")
+        return
+    name = (message.text or "").strip()
+    if not NAME_RE.fullmatch(name):
+        await message.reply_text("Недопустимое имя: латиница, цифры, _ и -, от 1 до 32 символов.")
+        return
+    context.user_data.pop("pending_action", None)
+    launch_action(update, context, action, name)
 
 
-async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
-    logger.exception("Ошибка обработки update", exc_info=context.error)
+async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not is_admin(update):
+        return
+    if context.bot_data.get("script_busy"):
+        await update.effective_message.reply_text("Дождись завершения предыдущей операции.")
+        return
+    context.user_data.pop("pending_action", None)
+    launch_action(update, context, "stats")
+
+
+async def name_command(update: Update, context, action: str) -> None:
+    if not is_admin(update):
+        return
+    if context.bot_data.get("script_busy"):
+        await update.effective_message.reply_text("Дождись завершения предыдущей операции.")
+        return
+    if len(context.args) != 1 or not NAME_RE.fullmatch(context.args[0]):
+        await update.effective_message.reply_text(f"Использование: /{action} <имя>")
+        return
+    context.user_data.pop("pending_action", None)
+    launch_action(update, context, action, context.args[0])
+
+
+async def add_user(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await name_command(update, context, "add")
+
+
+async def remove_user(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await name_command(update, context, "remove")
+
+
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    error = context.error
+    logger.error("Ошибка обработки обновления", exc_info=(type(error), error, error.__traceback__))
+    if isinstance(update, Update) and is_admin(update) and update.effective_message:
+        try:
+            await update.effective_message.reply_text("Ошибка. Подробности в журнале бота.")
+        except Exception:
+            logger.exception("Не удалось отправить сообщение об ошибке")
 
 
 def main() -> None:
-    token = TOKEN
-
-    app = Application.builder().token(token).build()
-
+    app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CallbackQueryHandler(button_handler))
+    app.add_handler(CommandHandler("stats", stats))
+    app.add_handler(CommandHandler("add", add_user))
+    app.add_handler(CommandHandler("remove", remove_user))
+    app.add_handler(CallbackQueryHandler(button_handler, pattern=r"^(add|remove|stats)$"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_name))
     app.add_error_handler(error_handler)
-
     app.run_polling(
-        poll_interval=5,
+        poll_interval=10,
         timeout=60,
-        bootstrap_retries=-1,
+        allowed_updates=["message", "callback_query"],
         drop_pending_updates=False,
     )
 
