@@ -122,6 +122,7 @@ async def send_configs(message, name):
         file = CONFIGS_DIR / f"{name}{suffix}"
         if file.is_file():
             with file.open("rb") as document:
+                print(f"[send_configs] {name}{suffix}")
                 await asyncio.sleep(3)
                 await message.reply_document(document=document, filename=file.name, caption=title)
     file = CONFIGS_DIR / f"{name}.vpnuri"
@@ -129,16 +130,19 @@ async def send_configs(message, name):
         text = file.read_text(encoding="utf-8").strip()
         if text:
             if len(text.encode("utf-16-le")) // 2 <= 4096:
+                print(f"[send_configs] {name}.vpnuri")
                 await asyncio.sleep(3)
                 await message.reply_text(text)
             else:
                 with file.open("rb") as document:
+                    print(f"[send_configs] {name}.vpnuri")
                     await asyncio.sleep(3)
                     await message.reply_document(document=document, filename=file.name)
 
 
 async def perform_action(message, context, action, name=None):
     try:
+        print(f"[perform_action] action: {action}")
         ok, result = await run_script(action, name)
         if action == "stats" and ok:
             try:
