@@ -15,7 +15,6 @@ from telegram.ext import (
 )
 
 load_dotenv()
-
 USER_ID = os.getenv("USER_ID")
 TOKEN = os.getenv("TOKEN")
 
@@ -57,7 +56,7 @@ def format_size(n: int) -> str:
         value /= 1024
 
 
-async def run_script(name: str, args: list[str] | None = None) -> str:
+async def run_script(name: str, args: list[str] | None = None):
     script = ALLOWED_SCRIPTS.get(name)
 
     if not script or not script.is_file():
@@ -85,11 +84,11 @@ async def run_script(name: str, args: list[str] | None = None) -> str:
         return "Ошибка выполнения."
 
 
-def is_admin(update: Update) -> bool:
+def is_admin(update: Update):
     return update.effective_user.id == int(USER_ID)
 
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update):
         return
     await update.message.reply_text(
@@ -100,7 +99,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     )
 
 
-async def add_user(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def add_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update):
         return
 
@@ -130,7 +129,7 @@ async def add_user(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text(vpnuri)
 
 
-async def remove_user(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def remove_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update):
         return
 
@@ -171,7 +170,7 @@ def format_stats(users: list[dict]) -> str:
     return "\n".join(lines)
 
 
-async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update):
         return
 
@@ -194,7 +193,7 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     )
 
 
-async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
     logger.exception("Ошибка обработки update", exc_info=context.error)
 
 
