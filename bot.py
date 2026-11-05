@@ -45,10 +45,16 @@ BUTTONS = {
     "📊 Статистика": "stats",
     "♻️ Перезагрузка": "restart",
 }
-COMMANDS = {"/add": "add", "/remove": "remove", "/stats": "stats"}
+COMMANDS = {
+    "/add": "add", "/remove": "remove",
+    "/stats": "stats", "/restart": "restart"
+}
 NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,32}$")
 KEYBOARD = ReplyKeyboardMarkup(
-    [["➕ Добавить", "🗑 Удалить"], ["📊 Статистика"]],
+    [
+        ["➕ Добавить", "🗑 Удалить"],
+        ["📊 Статистика", "♻️ Перезагрузка"]
+    ],
     resize_keyboard=True,
     one_time_keyboard=False,
     is_persistent=True,
