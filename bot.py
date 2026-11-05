@@ -1,6 +1,5 @@
 import asyncio
 import json
-import logging
 import os
 import re
 from html import escape
@@ -25,12 +24,6 @@ if not USER_ID or not TOKEN:
     load_dotenv(override=True)
 
 USER_ID = int(USER_ID)
-logging.basicConfig(
-    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-    level=logging.INFO,
-)
-logging.getLogger("httpx").setLevel(logging.WARNING)
-logger = logging.getLogger("awg-bot")
 SCRIPTS_DIR = Path("/opt/awg-bot/scripts")
 CONFIGS_DIR = Path("/root/awg")
 SCRIPTS = {
@@ -59,6 +52,9 @@ KEYBOARD = ReplyKeyboardMarkup(
     one_time_keyboard=False,
     is_persistent=True,
 )
+
+
+print(f'[awg-bot] RUN: {USER_ID}')
 
 
 def format_size(value):
@@ -163,8 +159,8 @@ async def perform_action(message, context, action, name=None):
         await send_text(message, result)
         if action == "add":
             await send_configs(message, name)
-    except Exception:
-        logger.exception("Ошибка операции %s", action)
+    except Exception as ex:
+        print(f'[perform_action] Ошибка операции {action}:', ex)
         await send_text(message, "Ошибка выполнения. Подробности в журнале бота.")
     finally:
         context.bot_data.pop("busy", None)
@@ -179,13 +175,13 @@ async def handle_message(update, context):
         try:
             await message.delete()
         except TelegramError as error:
-            logger.warning("Не удалось удалить нажатие: %s", error)
+            print(f'Не удалось удалить нажатие:', error)
 
     parts = text.split()
     command = parts[0].split("@", 1)[0] if parts else ""
     if command == "/start":
         context.user_data.pop("pending_action", None)
-        await send_text(message, "Управление AmneziaWG:")
+        await send_text(message, "🛠 Управление AmneziaWG 🛠")
         return
     if context.bot_data.get("busy"):
         await send_text(message, "Дождись завершения предыдущей операции.")
