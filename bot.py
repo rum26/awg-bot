@@ -37,11 +37,13 @@ SCRIPTS = {
     "add": SCRIPTS_DIR / "add_user.sh",
     "remove": SCRIPTS_DIR / "remove_user.sh",
     "stats": SCRIPTS_DIR / "stats.sh",
+    "restart": SCRIPTS_DIR / "restart.sh",
 }
 BUTTONS = {
     "➕ Добавить": "add",
     "🗑 Удалить": "remove",
     "📊 Статистика": "stats",
+    "♻️ Перезагрузка": "restart",
 }
 COMMANDS = {"/add": "add", "/remove": "remove", "/stats": "stats"}
 NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,32}$")
@@ -184,7 +186,7 @@ async def handle_message(update, context):
         return
 
     action = BUTTONS.get(text) or COMMANDS.get(command)
-    if action == "stats":
+    if action == "stats" or action == "restart":
         context.user_data.pop("pending_action", None)
         name = None
     else:
