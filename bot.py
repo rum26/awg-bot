@@ -219,7 +219,7 @@ def main():
     app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler(["start", "add", "remove", "stats"], handle_message))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    app.run_polling(poll_interval=15, allowed_updates=["message"])
+    app.run_polling(poll_interval=10, timeout=20, allowed_updates=["message"])
 
 
 if __name__ == "__main__":
