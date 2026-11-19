@@ -19,6 +19,7 @@
 import asyncio
 import json
 import re
+import os
 from html import escape
 from pathlib import Path
 
@@ -40,19 +41,18 @@ from dotenv import load_dotenv
 
 load_dotenv(Path(__file__).with_name(".env"))
 TOKEN = os.getenv("TOKEN", "").strip()
-USER_ID_RAW = os.getenv("USER_ID", "").strip()
-
-# Совместимость со старым поведением: при пустом .env спросить и сохранить.
-if not TOKEN or not USER_ID_RAW:
-    USER_ID_RAW = input("USER ID: ").strip()
-    TOKEN = input("TOKEN: ").strip()
-    if not TOKEN or not USER_ID_RAW:
+USER_ID = os.getenv("USER_ID", "").strip()
+if not USER_ID or not TOKEN:
+    USER_ID = input("USER ID:").strip()
+    TOKEN = input("TOKEN:").strip()
+    if not USER_ID or not TOKEN:
         raise ValueError("USER_ID и TOKEN не могут быть пустыми")
-    Path(__file__).with_name(".env").write_text(
-        f"USER_ID={USER_ID_RAW}\nTOKEN={TOKEN}\n", encoding="utf-8"
-    )
+    with open(".env", "w", encoding="utf-8") as file_env:
+        file_env.write(f"USER_ID={USER_ID}\n")
+        file_env.write(f"TOKEN={TOKEN}\n")
+    load_dotenv(override=True)
 
-USER_ID = int(USER_ID_RAW)
+USER_ID = int(USER_ID)
 SCRIPTS_DIR = Path("/opt/awg-bot/scripts")
 CONFIGS_DIR = Path("/root/awg")
 
@@ -374,10 +374,6 @@ async def fallback(message: Message) -> None:
 
 async def main() -> None:
     await bot.delete_webhook(drop_pending_updates=True)
-    try:
-        await bot.send_message(USER_ID, "✅ Бот AmneziaWG запущен.")
-    except TelegramAPIError as ex:
-        print(f"[awg-bot] Не удалось уведомить о старте: {ex}")
     print(f"[awg-bot] RUN (aiogram): {USER_ID}")
     await dp.start_polling(bot, allowed_updates=["message", "callback_query"])
 
