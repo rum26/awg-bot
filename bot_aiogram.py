@@ -1,11 +1,29 @@
+"""
+Управление AmneziaWG через Telegram — версия на aiogram 3.x.
+
+Отличия от bot.py (python-telegram-bot):
+  - инлайн-кнопки: меню редактирует одно сообщение, чат не засоряется;
+  - FSM вместо ручных флагов pending_action/bot_data["busy"];
+  - asyncio.Lock вместо флага busy (устойчивее при ошибках);
+  - подтверждение перед перезагрузкой сервера;
+  - очистка чата: сообщения с именем пользователя удаляются после обработки;
+  - уведомление владельцу при старте бота;
+  - очистка webhook и pending updates при старте.
+
+Интерфейс со скриптами не менялся — те же scripts/*.sh и /root/awg.
+
+Зависимости:  pip install aiogram python-dotenv
+Запуск:       python3 bot_aiogram.py
+"""
+
 import asyncio
 import json
 import re
-import os
 from html import escape
 from pathlib import Path
 
 from aiogram import Bot, Dispatcher, F
+from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.exceptions import TelegramAPIError, TelegramBadRequest
 from aiogram.filters import Command, CommandObject, CommandStart
@@ -47,7 +65,7 @@ SCRIPTS = {
 NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,32}$")
 SCRIPT_TIMEOUT = 30
 
-bot = Bot(token=TOKEN, default=ParseMode.HTML)
+bot = Bot(token=TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher()
 
 # Не даём запустить две операции одновременно (в т.ч. при повторных кликах).
@@ -365,4 +383,8 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    finally:
+        # Гарантированно закрываем сессию при любом выходе.
+        asyncio.run(bot.session.close())
