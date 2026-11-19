@@ -1,14 +1,25 @@
 import asyncio
 import json
-import os
 import re
+import os
 from html import escape
 from pathlib import Path
 
+from aiogram import Bot, Dispatcher, F
+from aiogram.client.default import DefaultBotProperties
+from aiogram.enums import ParseMode
+from aiogram.exceptions import TelegramAPIError, TelegramBadRequest
+from aiogram.filters import Command, CommandObject, CommandStart
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.types import (
+    CallbackQuery,
+    FSInputFile,
+    InlineKeyboardMarkup,
+    InlineKeyboardButton,
+    Message,
+)
 from dotenv import load_dotenv
-from telegram import ReplyKeyboardMarkup
-from telegram.error import TelegramError
-from telegram.ext import Application, CommandHandler, MessageHandler, filters
 
 load_dotenv(Path(__file__).with_name(".env"))
 TOKEN = os.getenv("TOKEN", "").strip()
@@ -26,38 +37,70 @@ if not USER_ID or not TOKEN:
 USER_ID = int(USER_ID)
 SCRIPTS_DIR = Path("/opt/awg-bot/scripts")
 CONFIGS_DIR = Path("/root/awg")
+
 SCRIPTS = {
     "add": SCRIPTS_DIR / "add_user.sh",
     "remove": SCRIPTS_DIR / "remove_user.sh",
     "stats": SCRIPTS_DIR / "stats.sh",
     "restart": SCRIPTS_DIR / "restart.sh",
 }
-BUTTONS = {
-    "➕ Добавить": "add",
-    "🗑 Удалить": "remove",
-    "📊 Статистика": "stats",
-    "♻️ Перезагрузка": "restart",
-}
-COMMANDS = {
-    "/add": "add", "/remove": "remove",
-    "/stats": "stats", "/restart": "restart"
-}
 NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,32}$")
-KEYBOARD = ReplyKeyboardMarkup(
-    [
-        ["➕ Добавить", "🗑 Удалить"],
-        ["📊 Статистика", "♻️ Перезагрузка"]
-    ],
-    resize_keyboard=True,
-    one_time_keyboard=False,
-    is_persistent=True,
+# ANSI-коды цветов, которые скрипт пишет в терминал (Telegram их не понимает).
+ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+# Префикс лог-строк вида "[2026-11-19 09:41:40] INFO: ".
+LOG_PREFIX_RE = re.compile(
+    r"^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\]\s*"
+    r"(?:INFO|WARN(?:ING)?|ERROR|OK|DEBUG)?\s*:?\s*"
 )
+SCRIPT_TIMEOUT = 30
+
+bot = Bot(token=TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+dp = Dispatcher()
+
+# Не даём запустить две операции одновременно (в т.ч. при повторных кликах).
+operation_lock = asyncio.Lock()
 
 
-print(f'[awg-bot] RUN: {USER_ID}')
+# ---------------------------------------------------------------------------
+# Клавиатуры
+# ---------------------------------------------------------------------------
+
+def kb_main() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="➕ Добавить", callback_data="act:add"),
+         InlineKeyboardButton(text="🗑 Удалить", callback_data="act:remove")],
+        [InlineKeyboardButton(text="📊 Статистика", callback_data="act:stats"),
+         InlineKeyboardButton(text="♻️ Перезагрузка", callback_data="act:restart")],
+    ])
 
 
-def format_size(value):
+def kb_cancel() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="« Отмена", callback_data="nav:main")],
+    ])
+
+
+def kb_confirm_restart() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Да, перезагрузить", callback_data="do:restart")],
+        [InlineKeyboardButton(text="« Отмена", callback_data="nav:main")],
+    ])
+
+
+# ---------------------------------------------------------------------------
+# FSM-состояния
+# ---------------------------------------------------------------------------
+
+class UserForm(StatesGroup):
+    waiting_add_name = State()
+    waiting_remove_name = State()
+
+
+# ---------------------------------------------------------------------------
+# Утилиты
+# ---------------------------------------------------------------------------
+
+def format_size(value) -> str:
     value = float(value)
     for unit in ("Б", "КБ", "МБ", "ГБ", "ТБ"):
         if value < 1024 or unit == "ТБ":
@@ -65,7 +108,7 @@ def format_size(value):
         value /= 1024
 
 
-def format_stats(users):
+def format_stats(users) -> str:
     if not users:
         return "Пользователей пока нет."
     headers = ("Имя", "IP", "Скачано", "Статус")
@@ -80,18 +123,29 @@ def format_stats(users):
     return "\n".join(lines)
 
 
-async def send_text(message, text, table=False):
-    text = text or "Нет данных."
-    for offset in range(0, len(text), 1500):
-        part = text[offset:offset + 1500]
-        await message.reply_text(
-            f"<pre>{escape(part)}</pre>" if table else part,
-            parse_mode="HTML" if table else None,
-            reply_markup=KEYBOARD,
-        )
+def clean_output(text: str) -> str:
+    """Убирает ANSI-коды цветов из вывода скрипта."""
+    return ANSI_RE.sub("", text).strip()
 
 
-async def run_script(action, name=None):
+def format_log(text: str) -> str:
+    """
+    Превращает сырой вывод скрипта в аккуратный список для Telegram:
+    убирает таймстемпы и уровни логов, каждую строку — с точкой.
+    """
+    lines = []
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        line = LOG_PREFIX_RE.sub("", line)
+        if line:
+            lines.append(f"• {escape(line)}")
+    return "\n".join(lines)
+
+
+async def run_script(action: str, name: str | None = None):
+    """Запуск скрипта с таймаутом. Возвращает (ok, очищенный текст)."""
     script = SCRIPTS[action]
     if not script.is_file():
         return False, f"Скрипт не найден: {script}"
@@ -101,126 +155,248 @@ async def run_script(action, name=None):
         stderr=asyncio.subprocess.STDOUT,
     )
     try:
-        output, _ = await asyncio.wait_for(proc.communicate(), timeout=30)
-    except asyncio.TimeoutError:
-        if proc.returncode is None:
-            try:
-                proc.kill()
-            except ProcessLookupError:
-                pass
+        output, _ = await asyncio.wait_for(proc.communicate(), timeout=SCRIPT_TIMEOUT)
+    except TimeoutError:
+        proc.kill()
         await proc.communicate()
-        return False, "Ошибка: скрипт не завершился за 30 секунд."
-    text = output.decode(errors="replace").strip()
+        return False, f"Ошибка: скрипт не завершился за {SCRIPT_TIMEOUT} секунд."
+    text = clean_output(output.decode(errors="replace"))
     if proc.returncode != 0:
         return False, f"Ошибка скрипта (код {proc.returncode}):\n{text or 'Нет вывода.'}"
     return True, text or "Готово."
 
 
-async def send_configs(message, name):
+async def send_configs(message: Message, name: str) -> None:
+    """Отправляет .conf / QR / vpnuri для пользователя, если файлы есть."""
     files = (
         (".conf", "Простой конфиг для AmneziaWG"),
         (".png", "Простой QR для AmneziaWG"),
         (".vpnuri.png", "Улучшенный QR для AmneziaVPN"),
     )
     for suffix, title in files:
-        file = CONFIGS_DIR / f"{name}{suffix}"
-        if file.is_file():
-            with file.open("rb") as document:
-                print(f"[send_configs] {name}{suffix}")
-                await asyncio.sleep(1)
-                await message.reply_document(document=document, filename=file.name, caption=title)
-    file = CONFIGS_DIR / f"{name}.vpnuri"
-    if file.is_file():
-        text = file.read_text(encoding="utf-8").strip()
+        path = CONFIGS_DIR / f"{name}{suffix}"
+        if path.is_file():
+            await asyncio.sleep(1)  # не упереться в лимиты Telegram
+            await message.answer_document(FSInputFile(path), caption=title)
+
+    uri = CONFIGS_DIR / f"{name}.vpnuri"
+    if uri.is_file():
+        text = uri.read_text(encoding="utf-8").strip()
         if text:
+            await asyncio.sleep(1)
             if len(text.encode("utf-16-le")) // 2 <= 4096:
-                print(f"[send_configs] {name}.vpnuri")
-                await asyncio.sleep(1)
-                await message.reply_text(text)
+                await message.answer(text)
             else:
-                with file.open("rb") as document:
-                    print(f"[send_configs] {name}.vpnuri")
-                    await asyncio.sleep(1)
-                    await message.reply_document(document=document, filename=file.name)
+                await message.answer_document(FSInputFile(uri))
 
 
-async def perform_action(message, context, action, name=None):
+async def edit_or_answer(message: Message, text: str, reply_markup=None,
+                         table: bool = False) -> Message:
+    """Пытается отредактировать сообщение; если текст тот же — отвечает новым."""
+    if table:
+        text = f"<pre>{escape(text)}</pre>"
     try:
-        print(f"[perform_action] action: {action}")
-        ok, result = await run_script(action, name)
-        if action == "stats" and ok:
+        return await message.edit_text(text, reply_markup=reply_markup)
+    except TelegramBadRequest as ex:
+        if "message is not modified" in str(ex).lower():
+            return message
+        return await message.answer(text, reply_markup=reply_markup)
+
+
+# ---------------------------------------------------------------------------
+# Обработчики
+# ---------------------------------------------------------------------------
+
+@dp.message(CommandStart())
+async def cmd_start(message: Message, state: FSMContext) -> None:
+    await state.clear()
+    await message.answer("🛠 <b>Управление AmneziaWG</b>\nВыбери действие:",
+                         reply_markup=kb_main())
+
+
+@dp.callback_query(F.data == "nav:main")
+async def nav_main(query: CallbackQuery, state: FSMContext) -> None:
+    await state.clear()
+    await edit_or_answer(query.message, "🛠 <b>Управление AmneziaWG</b>\nВыбери действие:",
+                         reply_markup=kb_main())
+    await query.answer()
+
+
+@dp.callback_query(F.data == "act:stats")
+async def act_stats(query: CallbackQuery) -> None:
+    if operation_lock.locked():
+        await query.answer("Подожди, выполняется другая операция…", show_alert=True)
+        return
+    await query.answer("Собираю статистику…")
+    async with operation_lock:
+        ok, result = await run_script("stats")
+        if ok:
             try:
                 users = json.loads(result)
             except json.JSONDecodeError:
                 users = None
             if isinstance(users, list):
-                await send_text(message, format_stats(users), table=True)
+                text = format_stats(users) or "Нет данных."
+                await edit_or_answer(query.message, text, reply_markup=kb_main(), table=True)
                 return
-        await send_text(message, result)
-        if action == "add":
-            await send_configs(message, name)
-    except Exception as ex:
-        print(f'[perform_action] Ошибка операции {action}:', ex)
-        await send_text(message, "Ошибка выполнения. Подробности в журнале бота.")
-    finally:
-        context.bot_data.pop("busy", None)
+        await edit_or_answer(query.message, result or "Нет данных.",
+                             reply_markup=kb_main())
 
 
-async def handle_message(update, context):
-    if not update.effective_user or update.effective_user.id != USER_ID:
+@dp.callback_query(F.data == "act:restart")
+async def act_restart_menu(query: CallbackQuery, state: FSMContext) -> None:
+    await state.clear()
+    await edit_or_answer(query.message, "⚠️ <b>Перезагрузить AmneziaWG?</b>",
+                         reply_markup=kb_confirm_restart())
+    await query.answer()
+
+
+@dp.callback_query(F.data == "do:restart")
+async def do_restart(query: CallbackQuery) -> None:
+    if operation_lock.locked():
+        await query.answer("Подожди, выполняется другая операция…", show_alert=True)
         return
-    message = update.effective_message
-    text = (message.text or "").strip()
-    if text in BUTTONS:
-        try:
-            await message.delete()
-        except TelegramError as error:
-            print(f'Не удалось удалить нажатие:', error)
-
-    parts = text.split()
-    command = parts[0].split("@", 1)[0] if parts else ""
-    if command == "/start":
-        context.user_data.pop("pending_action", None)
-        await send_text(message, "🛠 Управление AmneziaWG 🛠")
-        return
-    if context.bot_data.get("busy"):
-        await send_text(message, "Дождись завершения предыдущей операции.")
-        return
-
-    action = BUTTONS.get(text) or COMMANDS.get(command)
-    if action == "stats" or action == "restart":
-        context.user_data.pop("pending_action", None)
-        name = None
-    else:
-        if action in ("add", "remove"):
-            context.user_data["pending_action"] = action
-            if command not in COMMANDS or len(parts) == 1:
-                await send_text(message, "Пришли имя пользователя одним сообщением:")
-                return
-            name = " ".join(parts[1:])
+    await query.answer("Перезагружаю…")
+    async with operation_lock:
+        ok, result = await run_script("restart")
+        if ok:
+            text = "✅ Сервер перезагружен."
+            details = format_log(result)
+            if details:
+                text += f"\n\n{details}"
         else:
-            action = context.user_data.get("pending_action")
-            name = text
-        if action not in ("add", "remove"):
-            await send_text(message, "Выбери действие кнопками внизу.")
-            return
-        if not NAME_RE.fullmatch(name):
-            await send_text(message, "Имя: латиница, цифры, _ и -, от 1 до 32 символов.")
-            return
-        context.user_data.pop("pending_action", None)
+            text = f"❌ Ошибка:\n{format_log(result) or escape(result)}"
+        await edit_or_answer(query.message, text, reply_markup=kb_main())
 
-    context.bot_data["busy"] = True
-    context.application.create_task(
-        perform_action(message, context, action, name), update=update,
+
+@dp.callback_query(F.data.in_({"act:add", "act:remove"}))
+async def act_ask_name(query: CallbackQuery, state: FSMContext) -> None:
+    action = "add" if query.data == "act:add" else "remove"
+    await state.set_state(
+        UserForm.waiting_add_name if action == "add"
+        else UserForm.waiting_remove_name
     )
+    prompt = ("➕ Пришли <b>имя</b> нового пользователя одним сообщением:"
+              if action == "add"
+              else "🗑 Пришли <b>имя</b> пользователя для удаления:")
+    await edit_or_answer(query.message, prompt, reply_markup=kb_cancel())
+    await query.answer()
 
 
-def main():
-    app = Application.builder().token(TOKEN).build()
-    app.add_handler(CommandHandler(["start", "add", "remove", "stats"], handle_message))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    app.run_polling(poll_interval=5, timeout=10, allowed_updates=["message"])
+async def handle_name(message: Message, state: FSMContext, action: str) -> None:
+    name = (message.text or "").strip()
+    # Убираем сообщение с именем, чтобы чат оставался чистым.
+    try:
+        await message.delete()
+    except TelegramAPIError:
+        pass
+
+    if not NAME_RE.fullmatch(name):
+        await message.answer("Имя: латиница, цифры, _ и -, от 1 до 32 символов.",
+                             reply_markup=kb_cancel())
+        return
+
+    await state.clear()
+    if operation_lock.locked():
+        await message.answer("Подожди, выполняется другая операция.",
+                             reply_markup=kb_main())
+        return
+
+    menu_msg = await message.answer(
+        f"{'➕ Добавляю' if action == 'add' else '🗑 Удаляю'} <b>{escape(name)}</b>…",
+        reply_markup=kb_cancel())
+
+    async with operation_lock:
+        ok, result = await run_script(action, name)
+        result = result or "Готово."
+        if ok:
+            header = ("✅ Пользователь добавлен." if action == "add"
+                      else "🗑 Пользователь удалён.")
+            details = format_log(result)
+            text = f"{header}\n\n{details}" if details else header
+            await edit_or_answer(menu_msg, text, reply_markup=kb_main())
+            if action == "add":
+                await send_configs(message, name)
+        else:
+            await edit_or_answer(menu_msg, f"❌ Ошибка:\n{format_log(result)}",
+                                 reply_markup=kb_main())
+
+
+@dp.message(UserForm.waiting_add_name)
+async def name_for_add(message: Message, state: FSMContext) -> None:
+    await handle_name(message, state, "add")
+
+
+@dp.message(UserForm.waiting_remove_name)
+async def name_for_remove(message: Message, state: FSMContext) -> None:
+    await handle_name(message, state, "remove")
+
+
+# Команды с аргументами: /add имя, /remove имя, /stats, /restart
+@dp.message(Command("stats"))
+async def cmd_stats(message: Message) -> None:
+    if operation_lock.locked():
+        await message.answer("Подожди, выполняется другая операция.")
+        return
+    async with operation_lock:
+        ok, result = await run_script("stats")
+        if ok:
+            try:
+                users = json.loads(result)
+            except json.JSONDecodeError:
+                users = None
+            if isinstance(users, list):
+                await message.answer(format_stats(users) or "Нет данных.",
+                                     reply_markup=kb_main())
+                return
+        await message.answer(result or "Нет данных.", reply_markup=kb_main())
+
+
+@dp.message(Command("restart"))
+async def cmd_restart(message: Message) -> None:
+    await message.answer("⚠️ <b>Перезагрузить AmneziaWG?</b>",
+                         reply_markup=kb_confirm_restart())
+
+
+async def _cmd_with_name(message: Message, command: CommandObject,
+                         state: FSMContext, action: str) -> None:
+    """Общая логика для /add и /remove: с аргументом — сразу, без — спросить."""
+    if not command.args:
+        await state.set_state(
+            UserForm.waiting_add_name if action == "add"
+            else UserForm.waiting_remove_name)
+        prompt = ("➕ Пришли <b>имя</b> нового пользователя одним сообщением:"
+                  if action == "add"
+                  else "🗑 Пришли <b>имя</b> пользователя для удаления:")
+        await message.answer(prompt, reply_markup=kb_cancel())
+        return
+    await handle_name(message, state, action)
+
+
+@dp.message(Command("add"))
+async def cmd_add(message: Message, command: CommandObject, state: FSMContext) -> None:
+    await _cmd_with_name(message, command, state, "add")
+
+
+@dp.message(Command("remove"))
+async def cmd_remove(message: Message, command: CommandObject, state: FSMContext) -> None:
+    await _cmd_with_name(message, command, state, "remove")
+
+
+@dp.message()
+async def fallback(message: Message) -> None:
+    await message.answer("Выбери действие:", reply_markup=kb_main())
+
+
+async def main() -> None:
+    await bot.delete_webhook(drop_pending_updates=True)
+    print(f"[awg-bot] RUN (aiogram): {USER_ID}")
+    await dp.start_polling(bot, allowed_updates=["message", "callback_query"])
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        asyncio.run(main())
+    finally:
+        # Гарантированно закрываем сессию при любом выходе.
+        asyncio.run(bot.session.close())
