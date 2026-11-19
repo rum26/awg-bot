@@ -1,24 +1,7 @@
-"""
-Управление AmneziaWG через Telegram — версия на aiogram 3.x.
-
-Отличия от bot.py (python-telegram-bot):
-  - инлайн-кнопки: меню редактирует одно сообщение, чат не засоряется;
-  - FSM вместо ручных флагов pending_action/bot_data["busy"];
-  - asyncio.Lock вместо флага busy (устойчивее при ошибках);
-  - подтверждение перед перезагрузкой сервера;
-  - очистка чата: сообщения с именем пользователя удаляются после обработки;
-  - уведомление владельцу при старте бота;
-  - очистка webhook и pending updates при старте.
-
-Интерфейс со скриптами не менялся — те же scripts/*.sh и /root/awg.
-
-Зависимости:  pip install aiogram python-dotenv
-Запуск:       python3 bot_aiogram.py
-"""
-
 import asyncio
 import json
 import re
+import os
 from html import escape
 from pathlib import Path
 
