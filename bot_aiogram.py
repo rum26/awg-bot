@@ -8,7 +8,7 @@
   - подтверждение перед перезагрузкой сервера;
   - очистка чата: сообщения с именем пользователя удаляются после обработки;
   - уведомление владельцу при старте бота;
-  - повторная отправка при ошибке Telegram (RetryAfter и др.).
+  - очистка webhook и pending updates при старте.
 
 Интерфейс со скриптами не менялся — те же scripts/*.sh и /root/awg.
 
@@ -18,7 +18,6 @@
 
 import asyncio
 import json
-import os
 import re
 from html import escape
 from pathlib import Path
@@ -287,7 +286,6 @@ async def handle_name(message: Message, state: FSMContext, action: str) -> None:
                              reply_markup=kb_main())
         return
 
-    # Редактируем то же сообщение-меню, если можем, иначе шлём новое.
     menu_msg = await message.answer(
         f"{'➕ Добавляю' if action == 'add' else '🗑 Удаляю'} <b>{escape(name)}</b>…",
         reply_markup=kb_cancel())
@@ -345,8 +343,8 @@ async def cmd_restart(message: Message) -> None:
 
 async def _cmd_with_name(message: Message, command: CommandObject,
                          state: FSMContext, action: str) -> None:
+    """Общая логика для /add и /remove: с аргументом — сразу, без — спросить."""
     if not command.args:
-        await act_ask_name.__wrapped__ if False else None  # no-op
         await state.set_state(
             UserForm.waiting_add_name if action == "add"
             else UserForm.waiting_remove_name)
