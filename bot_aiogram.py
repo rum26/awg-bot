@@ -7,7 +7,7 @@
   - asyncio.Lock вместо флага busy (устойчивее при ошибках);
   - подтверждение перед перезагрузкой сервера;
   - очистка чата: сообщения с именем пользователя удаляются после обработки;
-  - уведомление владельцу при старте бота;
+  - вывод скриптов чистится от ANSI-кодов и форматируется списком;
   - очистка webhook и pending updates при старте.
 
 Интерфейс со скриптами не менялся — те же scripts/*.sh и /root/awg.
@@ -63,6 +63,13 @@ SCRIPTS = {
     "restart": SCRIPTS_DIR / "restart.sh",
 }
 NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,32}$")
+# ANSI-коды цветов, которые скрипт пишет в терминал (Telegram их не понимает).
+ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+# Префикс лог-строк вида "[2026-11-19 09:41:40] INFO: ".
+LOG_PREFIX_RE = re.compile(
+    r"^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\]\s*"
+    r"(?:INFO|WARN(?:ING)?|ERROR|OK|DEBUG)?\s*:?\s*"
+)
 SCRIPT_TIMEOUT = 30
 
 bot = Bot(token=TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
@@ -134,8 +141,29 @@ def format_stats(users) -> str:
     return "\n".join(lines)
 
 
+def clean_output(text: str) -> str:
+    """Убирает ANSI-коды цветов из вывода скрипта."""
+    return ANSI_RE.sub("", text).strip()
+
+
+def format_log(text: str) -> str:
+    """
+    Превращает сырой вывод скрипта в аккуратный список для Telegram:
+    убирает таймстемпы и уровни логов, каждую строку — с точкой.
+    """
+    lines = []
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        line = LOG_PREFIX_RE.sub("", line)
+        if line:
+            lines.append(f"• {escape(line)}")
+    return "\n".join(lines)
+
+
 async def run_script(action: str, name: str | None = None):
-    """Запуск скрипта с таймаутом. Возвращает (ok, текст)."""
+    """Запуск скрипта с таймаутом. Возвращает (ok, очищенный текст)."""
     script = SCRIPTS[action]
     if not script.is_file():
         return False, f"Скрипт не найден: {script}"
@@ -150,7 +178,7 @@ async def run_script(action: str, name: str | None = None):
         proc.kill()
         await proc.communicate()
         return False, f"Ошибка: скрипт не завершился за {SCRIPT_TIMEOUT} секунд."
-    text = output.decode(errors="replace").strip()
+    text = clean_output(output.decode(errors="replace"))
     if proc.returncode != 0:
         return False, f"Ошибка скрипта (код {proc.returncode}):\n{text or 'Нет вывода.'}"
     return True, text or "Готово."
@@ -249,8 +277,13 @@ async def do_restart(query: CallbackQuery) -> None:
     await query.answer("Перезагружаю…")
     async with operation_lock:
         ok, result = await run_script("restart")
-        text = ("✅ Сервер перезагружен." if ok
-                else f"❌ Ошибка:\n{escape(result)}")
+        if ok:
+            text = "✅ Сервер перезагружен."
+            details = format_log(result)
+            if details:
+                text += f"\n\n{details}"
+        else:
+            text = f"❌ Ошибка:\n{format_log(result) or escape(result)}"
         await edit_or_answer(query.message, text, reply_markup=kb_main())
 
 
@@ -297,12 +330,13 @@ async def handle_name(message: Message, state: FSMContext, action: str) -> None:
         if ok:
             header = ("✅ Пользователь добавлен." if action == "add"
                       else "🗑 Пользователь удалён.")
-            await edit_or_answer(menu_msg, f"{header}\n\n{escape(result)}",
-                                 reply_markup=kb_main())
+            details = format_log(result)
+            text = f"{header}\n\n{details}" if details else header
+            await edit_or_answer(menu_msg, text, reply_markup=kb_main())
             if action == "add":
                 await send_configs(message, name)
         else:
-            await edit_or_answer(menu_msg, f"❌ Ошибка:\n{escape(result)}",
+            await edit_or_answer(menu_msg, f"❌ Ошибка:\n{format_log(result)}",
                                  reply_markup=kb_main())
 
 
